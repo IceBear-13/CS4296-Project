@@ -1,0 +1,5 @@
+fastapi[standard]
+fastapi
+dotenv
+boto3
+pydantic
