@@ -14,11 +14,19 @@ s3_bucket_name = os.getenv("S3_BUCKET_NAME")
 sqs_queue_url_a = os.getenv("SQS_QUEUE_URL_A")
 sqs_queue_url_b = os.getenv("SQS_QUEUE_URL_B")
 
-session = boto3.Session(
-    aws_access_key_id=aws_access_key_id,
-    aws_secret_access_key=aws_secret_access_key,
-    region_name=aws_region
-)
+if (aws_access_key_id and not aws_secret_access_key) or (aws_secret_access_key and not aws_access_key_id):
+    raise ValueError(
+        "Incomplete AWS credentials: set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or neither to use default credentials."
+    )
+
+session_kwargs = {}
+if aws_access_key_id and aws_secret_access_key:
+    session_kwargs["aws_access_key_id"] = aws_access_key_id
+    session_kwargs["aws_secret_access_key"] = aws_secret_access_key
+if aws_region:
+    session_kwargs["region_name"] = aws_region
+
+session = boto3.Session(**session_kwargs)
 
 # Uncomment if you have yet to create the SQS queues and S3 bucket
 
