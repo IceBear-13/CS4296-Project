@@ -17,13 +17,15 @@ import uuid
 from pydantic import BaseModel
 from sanitize import sanitize_movie_filename
 
+
+
 class RequestedProfile(BaseModel):
-    resolution: str
-    video_codec: str
-    audio_codec: str
-    ffmpeg_preset: str
-    crf: int
-    video_bitrate: str
+    resolution: str = "854:480"
+    video_codec: str = "libx264"
+    audio_codec: str = "aac"
+    ffmpeg_preset: str = "medium"
+    crf: int = 23
+    video_bitrate: str = "1000k"
 
 app = FastAPI()
 
