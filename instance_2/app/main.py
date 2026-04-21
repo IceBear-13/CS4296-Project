@@ -34,8 +34,45 @@ def submit_transcode_job(
         raise HTTPException(
             status_code=413,
             detail=f"File too large. Max allowed: {settings.max_upload_mb} MB",
-    )
+        )
+
     job_id = str(uuid.uuid4())
     extension = Path(file.filename).suffix or ".mp4"
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     s3_input_key = f"{settings.input_prefix}/{timestamp}_{job_id}{extension}"
+
+    try:
+        s3_client.upload_fileobj(
+            file.file,
+            settings.s3_bucket,
+            s3_input_key,
+            ExtraArgs={
+                "ContentType": file.content_type or "application/octet-stream",
+            },
+        )
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to upload to S3: {exc}") from exc
+
+    message_body = {
+        "job_id": job_id,
+        "submitted_at": datetime.now(UTC).isoformat(),
+    }
+
+    try:
+        sqs_response = sqs_client.send_message(
+            QueueUrl=settings.sqs_queue_url,
+            MessageBody=json.dumps(message_body),
+            MessageAttributes={
+                "job_id": {"DataType": "String", "StringValue": job_id},
+                "input_key": {"DataType": "String", "StringValue": s3_input_key},
+            },
+        )
+    except (BotoCoreError, ClientError) as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to send SQS message: {exc}") from exc
+
+    return SubmitJobResponse(
+        job_id=job_id,
+        s3_input_key=s3_input_key,
+        sqs_message_id=sqs_response["MessageId"],
+        status="queued",
+    )
