@@ -142,9 +142,10 @@ def process_video_message(message: dict):
         sqs_client.send_message(
             QueueUrl=sqs_queue_url_b,
             MessageBody=json.dumps({
-                "jobId": job_id,
+                "job_id": job_id,
                 "bucket": bucket,
                 "key": output_key,
+                "output_file": output_key,
             })
         )
 
@@ -161,8 +162,9 @@ def process_video_message(message: dict):
 
 def main():
     threads = []
+    print("Waiting for messages in SQS Queue A...")
+
     while True:
-        print("Waiting for messages in SQS Queue A...")
         try:
             response = sqs_client.receive_message(
                 QueueUrl=sqs_queue_url_a,
