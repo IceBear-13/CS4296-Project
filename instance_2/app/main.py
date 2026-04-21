@@ -15,6 +15,12 @@ app = FastAPI(title="Transcoding Gateway", version="1.0.0")
 s3_client = boto3.client("s3", region_name=settings.aws_region)
 sqs_client = boto3.client("sqs", region_name=settings.aws_region)
 
+
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.post("/jobs/transcode", response_model=SubmitJobResponse)
 def submit_transcode_job(
     file: UploadFile = File(...),
@@ -55,6 +61,13 @@ def submit_transcode_job(
 
     message_body = {
         "job_id": job_id,
+        "bucket": settings.s3_bucket,
+        "input_key": s3_input_key,
+        "requested_profile": {
+            "resolution": target_resolution,
+            "video_codec": target_video_codec,
+            "audio_codec": target_audio_codec,
+        },
         "submitted_at": datetime.now(UTC).isoformat(),
     }
 
