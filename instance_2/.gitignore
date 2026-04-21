@@ -1,7 +1,8 @@
-.venv
-.vscode
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+venv/
 .env
+.DS_Store
