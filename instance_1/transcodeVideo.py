@@ -5,14 +5,11 @@ import boto3
 import json
 import subprocess
 from botocore.exceptions import ClientError
-from settings import session, s3_bucket_name, sqs_queue_url_a, sqs_queue_url_b, s3_client
+from settings import session, sqs_queue_url_a, sqs_queue_url_b
 from sanitize import sanitize_movie_filename
-import sys
 
 s3_client = session.client('s3')
 sqs_client = session.client('sqs')
-
-
 
 def download_video_from_s3(
     s3_client: boto3.client, 
@@ -63,20 +60,32 @@ def transcode_video(
         print(f"Error occurred while transcoding video: {input_path}")
         return False
 
-def parse_video_message(message: str) -> dict:
+def parse_video_message(message: dict) -> dict:
     try:
-        video_info = json.loads(message['Body'])
+        video_info = json.loads(message.get('Body', '{}'))
+        requested_profile = video_info.get("requested_profile") or {}
+        if not isinstance(requested_profile, dict):
+            print("Invalid message: requested_profile must be an object")
+            return {}
 
         job_id = video_info.get("job_id")
         bucket = video_info.get("bucket")
         key = video_info.get("key")
-        requested_profile = video_info.get("requested_profile")
+
+        if not job_id or not bucket or not key:
+            print("Invalid message: missing one or more required fields (job_id, bucket, key)")
+            return {}
+
         resolution = requested_profile.get("resolution")
         video_codec = requested_profile.get("video_codec")
         audio_codec = requested_profile.get("audio_codec")
         ffmpeg_preset = requested_profile.get("ffmpeg_preset", "medium")
         crf = requested_profile.get("crf", 23)
         video_bitrate = requested_profile.get("video_bitrate")
+
+        if not resolution or not video_codec or not audio_codec:
+            print("Invalid message: requested_profile must include resolution, video_codec, and audio_codec")
+            return {}
 
         return {
             "job_id": job_id,
@@ -99,35 +108,62 @@ def process_video_message(message: dict):
     if not video_info:
         return False
 
-    job_id = video_info["job_id"]
-    bucket = video_info["bucket"]
-    key = video_info["key"]
-    resolution = video_info["resolution"]
-    video_codec = video_info["video_codec"]
-    audio_codec = video_info["audio_codec"]
-    ffmpeg_preset = video_info["ffmpeg_preset"]
-    crf = video_info["crf"]
-    video_bitrate = video_info.get("video_bitrate")
+    try:
+        job_id = video_info["job_id"]
+        bucket = video_info["bucket"]
+        key = video_info["key"]
+        resolution = video_info["resolution"]
+        video_codec = video_info["video_codec"]
+        audio_codec = video_info["audio_codec"]
+        ffmpeg_preset = video_info["ffmpeg_preset"]
+        crf = video_info["crf"]
+        video_bitrate = video_info.get("video_bitrate")
 
-    sanitized_filename = sanitize_movie_filename(key.split('/')[-1])
-    input_path = f"/tmp/{sanitized_filename}"
-    output_path = f"/tmp/transcoded-{sanitized_filename}"
-    download_video_from_s3(s3_client, bucket, key, input_path)
+        sanitized_filename = sanitize_movie_filename(key.split('/')[-1])
+        input_path = f"/tmp/{sanitized_filename}"
+        output_path = f"/tmp/transcoded-{sanitized_filename}"
+        download_video_from_s3(s3_client, bucket, key, input_path)
 
-    transcode_video(input_path, output_path, video_codec, audio_codec, ffmpeg_preset, resolution, crf, video_bitrate)
-    upload_video_to_s3(s3_client, bucket, f"transcoded/{sanitized_filename}", output_path)
-    sqs_client.send_message(
-        QueueUrl=sqs_queue_url_b,
-        MessageBody=json.dumps({
-            "jobId": job_id,
-            "bucket": bucket,
-            "key": f"transcoded/{sanitized_filename}"
-        })
-    )
+        transcode_ok = transcode_video(
+            input_path,
+            output_path,
+            video_codec,
+            audio_codec,
+            ffmpeg_preset,
+            resolution,
+            crf,
+            video_bitrate,
+        )
+        if not transcode_ok:
+            return False
+
+        output_key = f"transcoded/{sanitized_filename}"
+        upload_video_to_s3(s3_client, bucket, output_key, output_path)
+        sqs_client.send_message(
+            QueueUrl=sqs_queue_url_b,
+            MessageBody=json.dumps({
+                "job_id": job_id,
+                "bucket": bucket,
+                "key": output_key,
+                "output_file": output_key,
+            })
+        )
+
+        # Acknowledge only after successful processing to avoid message loss.
+        sqs_client.delete_message(
+            QueueUrl=sqs_queue_url_a,
+            ReceiptHandle=message['ReceiptHandle']
+        )
+        return True
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        return False
 
 
 def main():
     threads = []
+    print("Waiting for messages in SQS Queue A...")
+
     while True:
         try:
             response = sqs_client.receive_message(
@@ -145,11 +181,6 @@ def main():
                     thread = threading.Thread(target=process_video_message, args=(message,))
                     thread.start()
                     threads.append(thread)
-
-                    sqs_client.delete_message(
-                        QueueUrl=sqs_queue_url_a,
-                        ReceiptHandle=message['ReceiptHandle']
-                    )
         except ClientError as e:
             print(f"Error receiving messages from SQS: {e}")
             time.sleep(5)
@@ -158,3 +189,6 @@ def main():
             time.sleep(5)
 
         
+
+if __name__ == "__main__":
+    main()
