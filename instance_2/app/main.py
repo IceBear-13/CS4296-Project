@@ -30,6 +30,11 @@ def submit_transcode_job(
     total_size = file.file.tell()
     file.file.seek(0)
 
+    if total_size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max allowed: {settings.max_upload_mb} MB",
+    )
     job_id = str(uuid.uuid4())
     extension = Path(file.filename).suffix or ".mp4"
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
