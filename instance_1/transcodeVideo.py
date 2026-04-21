@@ -116,7 +116,7 @@ def process_video_message(message: dict):
 
     transcode_video(input_path, output_path, video_codec, audio_codec, ffmpeg_preset, resolution, crf, video_bitrate)
     upload_video_to_s3(s3_client, bucket, f"transcoded/{sanitized_filename}", output_path)
-    sqs_client.send_messages(
+    sqs_client.send_message(
         QueueUrl=sqs_queue_url_b,
         MessageBody=json.dumps({
             "jobId": job_id,
