@@ -67,7 +67,7 @@ const FileUploadDropzone1 = ({
           <div className="flex items-center justify-center rounded-full border p-2.5">
             <Upload className="size-6 text-muted-foreground" />
           </div>
-          <p className="text-sm font-medium">Drag & drop a video file here</p>
+          <p className="text-sm font-medium">Drag & drop a video here</p>
           <p className="text-xs text-muted-foreground">
             Or click to browse (max 1 file, up to {maxSizeMb}MB)
           </p>

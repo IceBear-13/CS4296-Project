@@ -150,16 +150,11 @@ function App() {
         <Card className="border-slate-300/70 bg-white/90 shadow-2xl shadow-slate-400/20 backdrop-blur-sm">
           <CardHeader>
             <CardTitle>Submit Transcoding Job</CardTitle>
-            <CardDescription>
-              Configure requested_profile options and send the file to the
-              gateway API.
-            </CardDescription>
           </CardHeader>
 
           <CardContent>
             <form className="grid gap-6" onSubmit={handleSubmit}>
               <div className="grid gap-2">
-                <Label htmlFor="video-file">Video file</Label>
                 <FileUploadDropzone1
                   value={file}
                   onValueChange={handleFileChange}
