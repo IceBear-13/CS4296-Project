@@ -7,6 +7,7 @@ import subprocess
 from botocore.exceptions import ClientError
 from settings import session, sqs_queue_url_a, sqs_queue_url_b
 from sanitize import sanitize_movie_filename
+import psutil
 
 s3_client = session.client('s3')
 sqs_client = session.client('sqs')
@@ -36,7 +37,12 @@ def transcode_video(
     scale: str, 
     crf: int, 
     video_bitrate: str | None
-) -> bool:
+) -> tuple[bool, dict]:
+    metrics = {
+        "peak_cpu_usage_percent": 0.0,
+        "average_cpu_usage_percent": 0.0,
+        "memory_usage_mb": 0.0,
+    }
     try:
         cmd = [
             "ffmpeg",
@@ -54,11 +60,43 @@ def transcode_video(
         if video_bitrate:
             cmd.extend(["-b:v", video_bitrate])
         cmd.append(output_path)
-        subprocess.run(cmd, check=True)
-        return True
-    except subprocess.CalledProcessError:
+
+        ffmpeg_process = None
+        cpu_samples = []
+        peak_memory_bytes = 0
+
+        process = subprocess.Popen(cmd)
+        try:
+            ffmpeg_process = psutil.Process(process.pid)
+            # Prime cpu_percent so subsequent samples represent actual usage.
+            ffmpeg_process.cpu_percent(interval=None)
+        except (psutil.Error, ProcessLookupError):
+            ffmpeg_process = None
+
+        while process.poll() is None:
+            time.sleep(0.2)
+            if not ffmpeg_process:
+                continue
+            try:
+                cpu_usage = ffmpeg_process.cpu_percent(interval=None)
+                memory_bytes = ffmpeg_process.memory_info().rss
+                cpu_samples.append(cpu_usage)
+                peak_memory_bytes = max(peak_memory_bytes, memory_bytes)
+            except (psutil.Error, ProcessLookupError):
+                ffmpeg_process = None
+
+        if process.wait() != 0:
+            print(f"Error occurred while transcoding video: {input_path}")
+            return False, metrics
+
+        if cpu_samples:
+            metrics["peak_cpu_usage_percent"] = round(max(cpu_samples), 2)
+            metrics["average_cpu_usage_percent"] = round(sum(cpu_samples) / len(cpu_samples), 2)
+        metrics["memory_usage_mb"] = round(peak_memory_bytes / (1024 * 1024), 2)
+        return True, metrics
+    except Exception:
         print(f"Error occurred while transcoding video: {input_path}")
-        return False
+        return False, metrics
 
 def parse_video_message(message: dict) -> dict:
     try:
@@ -124,7 +162,7 @@ def process_video_message(message: dict):
         output_path = f"/tmp/transcoded-{sanitized_filename}"
         download_video_from_s3(s3_client, bucket, key, input_path)
 
-        transcode_ok = transcode_video(
+        transcode_ok, transcode_metrics = transcode_video(
             input_path,
             output_path,
             video_codec,
@@ -146,6 +184,9 @@ def process_video_message(message: dict):
                 "bucket": bucket,
                 "key": output_key,
                 "output_file": output_key,
+                "peak_cpu_usage_percent": transcode_metrics["peak_cpu_usage_percent"],
+                "average_cpu_usage_percent": transcode_metrics["average_cpu_usage_percent"],
+                "memory_usage_mb": transcode_metrics["memory_usage_mb"],
             })
         )
 
