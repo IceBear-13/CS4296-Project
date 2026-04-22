@@ -135,7 +135,10 @@ On success, the worker sends:
 	"job_id": "job-123",
 	"bucket": "your-bucket",
 	"key": "transcoded/input.mp4",
-	"output_file": "transcoded/input.mp4"
+	"output_file": "transcoded/input.mp4",
+	"peak_cpu_usage_percent": 158.2,
+	"average_cpu_usage_percent": 96.4,
+	"memory_usage_mb": 412.73
 }
 ```
 

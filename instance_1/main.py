@@ -73,6 +73,7 @@ def process_video(job_id: str, file: UploadFile, requested_profile: RequestedPro
             if not output_file:
                 raise HTTPException(status_code=500, detail="Transcoding result missing output_file/key.")
 
+            print(f"Peak memory usage: {message_body.get('memory_usage_mb')}, peak CPU usage: {message_body.get('peak_cpu_usage_percent')}, average CPU usage: {message_body.get('average_cpu_usage_percent')}")
             download_file_from_s3(output_file, output_path)
             delete_message_from_queue(sqs_queue_url_b, message["ReceiptHandle"])
             return output_path
