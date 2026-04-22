@@ -16,8 +16,7 @@ import time
 import uuid
 from pydantic import BaseModel
 from sanitize import sanitize_movie_filename
-
-
+from fastapi.middleware.cors import CORSMiddleware
 
 class RequestedProfile(BaseModel):
     resolution: str = "854:480"
@@ -28,7 +27,12 @@ class RequestedProfile(BaseModel):
     video_bitrate: str = "1000k"
 
 app = FastAPI()
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["localhost", "http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")

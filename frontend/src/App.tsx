@@ -1,13 +1,12 @@
-import type { FormEvent } from "react";
+import type { SubmitEvent } from "react";
 import { useMemo, useState } from "react";
-import { Loader2, Upload } from "lucide-react";
+import { Download, Loader2, Upload } from "lucide-react";
 
 import { Button } from "./components/ui/button";
 import FileUploadDropzone1 from "./components/file-upload-dropzone-1";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "./components/ui/card";
@@ -20,8 +19,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
+import { type UploadResult, uploadVideo } from "./api";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+// const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 const RESOLUTION_OPTIONS = ["240p", "480p", "720p", "1080p"];
 const VIDEO_CODEC_OPTIONS = ["libx264", "libx265", "vp9", "av1"];
@@ -38,36 +38,36 @@ const PRESET_OPTIONS = [
   "veryslow",
 ];
 
-type SubmitJobResponse = {
-  job_id: string;
-  s3_input_key: string;
-  sqs_message_id: string;
-  status: string;
-};
+// type SubmitJobResponse = {
+//   job_id: string;
+//   s3_input_key: string;
+//   sqs_message_id: string;
+//   status: string;
+// };
 
 type FormState = {
   resolution: string;
-  videoCodec: string;
-  audioCodec: string;
-  ffmpegPreset: string;
+  video_codec: string;
+  audio_codec: string;
+  ffmpeg_preset: string;
   crf: number;
-  videoBitrate: string;
+  video_bitrate: string;
 };
 
 const initialForm: FormState = {
   resolution: "480p",
-  videoCodec: "libx264",
-  audioCodec: "aac",
-  ffmpegPreset: "medium",
+  video_codec: "libx264",
+  audio_codec: "aac",
+  ffmpeg_preset: "medium",
   crf: 23,
-  videoBitrate: "",
+  video_bitrate: "",
 };
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
   const [form, setForm] = useState<FormState>(initialForm);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [response, setResponse] = useState<SubmitJobResponse | null>(null);
+  const [response, setResponse] = useState<UploadResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
   const isSubmitDisabled = useMemo(
@@ -81,7 +81,7 @@ function App() {
     setErrorMessage("");
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!file) {
       setErrorMessage("Please select a video file before submitting.");
@@ -92,38 +92,18 @@ function App() {
     setResponse(null);
     setErrorMessage("");
 
-    const requestedProfile = {
-      resolution: form.resolution,
-      video_codec: form.videoCodec,
-      audio_codec: form.audioCodec,
-      ffmpeg_preset: form.ffmpegPreset,
-      crf: form.crf,
-      video_bitrate: form.videoBitrate || null,
-    };
-
-    const payload = new FormData();
-    payload.append("file", file);
-    payload.append("target_resolution", form.resolution);
-    payload.append("target_video_codec", form.videoCodec);
-    payload.append("target_audio_codec", form.audioCodec);
-    payload.append("requested_profile", JSON.stringify(requestedProfile));
-
     try {
-      const uploadResponse = await fetch(`${API_BASE_URL}/jobs/transcode`, {
-        method: "POST",
-        body: payload,
-      });
+      const uploadResponse = await uploadVideo(
+        file,
+        form.resolution,
+        form.video_codec,
+        form.audio_codec,
+        form.ffmpeg_preset,
+        form.crf,
+        form.video_bitrate,
+      );
 
-      const data = await uploadResponse.json();
-      if (!uploadResponse.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : "Failed to submit job.";
-        throw new Error(detail);
-      }
-
-      setResponse(data as SubmitJobResponse);
+      setResponse(uploadResponse);
     } catch (error) {
       const message =
         error instanceof Error
@@ -135,8 +115,23 @@ function App() {
     }
   };
 
+  const handleDownload = () => {
+    if (!response) {
+      return;
+    }
+
+    const blobUrl = URL.createObjectURL(response.blob);
+    const downloadLink = document.createElement("a");
+    downloadLink.href = blobUrl;
+    downloadLink.download = response.downloadedFileName;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    downloadLink.remove();
+    URL.revokeObjectURL(blobUrl);
+  };
+
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_#f4f5f8_10%,_#f2efea_45%,_#ece9e2_100%)] px-4 py-10 text-slate-900">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#f4f5f8_10%,#f2efea_45%,#ece9e2_100%)] px-4 py-10 text-slate-900">
       <div className="mx-auto w-full max-w-4xl">
         <header className="mb-8">
           <p className="mb-2 inline-flex rounded-full border border-slate-300/70 bg-white/80 px-3 py-1 font-mono text-xs uppercase tracking-[0.2em] text-slate-600">
@@ -193,9 +188,9 @@ function App() {
                 <div className="grid gap-2">
                   <Label htmlFor="video-codec">Video codec</Label>
                   <Select
-                    value={form.videoCodec}
+                    value={form.video_codec}
                     onValueChange={(value) =>
-                      setForm((prev) => ({ ...prev, videoCodec: value }))
+                      setForm((prev) => ({ ...prev, video_codec: value }))
                     }
                   >
                     <SelectTrigger id="video-codec">
@@ -214,9 +209,9 @@ function App() {
                 <div className="grid gap-2">
                   <Label htmlFor="audio-codec">Audio codec</Label>
                   <Select
-                    value={form.audioCodec}
+                    value={form.audio_codec}
                     onValueChange={(value) =>
-                      setForm((prev) => ({ ...prev, audioCodec: value }))
+                      setForm((prev) => ({ ...prev, audio_codec: value }))
                     }
                   >
                     <SelectTrigger id="audio-codec">
@@ -235,9 +230,9 @@ function App() {
                 <div className="grid gap-2">
                   <Label htmlFor="ffmpeg-preset">FFmpeg preset</Label>
                   <Select
-                    value={form.ffmpegPreset}
+                    value={form.ffmpeg_preset}
                     onValueChange={(value) =>
-                      setForm((prev) => ({ ...prev, ffmpegPreset: value }))
+                      setForm((prev) => ({ ...prev, ffmpeg_preset: value }))
                     }
                   >
                     <SelectTrigger id="ffmpeg-preset">
@@ -278,11 +273,11 @@ function App() {
                     id="video-bitrate"
                     type="text"
                     placeholder="e.g. 2M"
-                    value={form.videoBitrate}
+                    value={form.video_bitrate}
                     onChange={(event) =>
                       setForm((prev) => ({
                         ...prev,
-                        videoBitrate: event.target.value,
+                        video_bitrate: event.target.value,
                       }))
                     }
                   />
@@ -312,11 +307,12 @@ function App() {
 
             {response && (
               <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
-                <p className="font-semibold">Job submitted successfully</p>
-                <p className="mt-1">job_id: {response.job_id}</p>
-                <p>s3_input_key: {response.s3_input_key}</p>
-                <p>sqs_message_id: {response.sqs_message_id}</p>
-                <p>status: {response.status}</p>
+                <p className="font-semibold">Transcoding complete</p>
+                <p className="mt-1">Ready to download: {response.downloadedFileName}</p>
+                <Button type="button" className="mt-3" onClick={handleDownload}>
+                  <Download className="size-4" />
+                  Download file
+                </Button>
               </div>
             )}
           </CardContent>

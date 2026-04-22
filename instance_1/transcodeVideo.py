@@ -177,6 +177,7 @@ def main():
                 continue
             
             else:
+                print (f"Received {len(messages)} message(s) from SQS Queue A")
                 for message in messages:
                     thread = threading.Thread(target=process_video_message, args=(message,))
                     thread.start()
