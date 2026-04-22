@@ -14,8 +14,6 @@ s3_bucket_name = os.getenv("S3_BUCKET_NAME")
 sqs_queue_url_a = os.getenv("SQS_QUEUE_URL_A")
 sqs_queue_url_b = os.getenv("SQS_QUEUE_URL_B")
 
-
-
 if (aws_access_key_id and not aws_secret_access_key) or (aws_secret_access_key and not aws_access_key_id):
     raise ValueError(
         "Incomplete AWS credentials: set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or neither to use default credentials."

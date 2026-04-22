@@ -1,60 +1,100 @@
-# Video Transcoding API (FastAPI + AWS S3/SQS)
+# Video Transcode Worker (Instance A)
 
-This service accepts an uploaded video, pushes a transcoding job to SQS, waits for a worker result message, downloads the transcoded output from S3, and returns the file to the client.
+This service listens to an input SQS queue, downloads videos from S3, transcodes them with FFmpeg, uploads the output back to S3, and sends a completion message to an output SQS queue.
 
-## How It Works
+## What It Does
 
-1. Client uploads a video to `POST /transcode`.
-2. API sanitizes the filename and uploads the source file to S3.
-3. API sends a job message to input queue `SQS_QUEUE_URL_A`.
-4. API polls output queue `SQS_QUEUE_URL_B` for a message with the same `job_id`.
-5. API downloads the generated output file from S3 and returns it as the response.
+1. Polls `SQS_QUEUE_URL_A` for jobs.
+2. Expects each job to include video location and transcoding profile.
+3. Downloads the source object from S3 to `/tmp`.
+4. Runs FFmpeg with the requested profile.
+5. Uploads output to `transcoded/<sanitized_filename>` in S3.
+6. Sends result metadata to `SQS_QUEUE_URL_B`.
+7. Deletes the source queue message only after successful processing.
 
-The API waits up to 5 minutes for the result before returning a timeout.
+## Project Files
 
-## Project Structure
-
-- `main.py`: FastAPI app and end-to-end transcode request flow.
-- `sanitize.py`: Filename sanitization helper for safe storage and processing.
-- `boto3_utils/settings.py`: AWS/session/env configuration.
-- `boto3_utils/utils.py`: S3 and SQS helper functions.
+- `transcodeVideo.py`: main worker loop and processing logic.
+- `settings.py`: AWS/session/env configuration.
+- `sanitize.py`: filename sanitization for safe local temp paths.
 - `requirements.txt`: Python dependencies.
-- `Dockerfile`: Container image definition.
+- `Dockerfile`: container build and runtime definition.
 
 ## Prerequisites
 
-- Python 3.10+ (Docker path uses Python 3.12 image)
-- AWS access to:
-	- one S3 bucket
-	- two SQS queues (input and output)
-- A worker service that:
-	- reads from `SQS_QUEUE_URL_A`
-	- transcodes the file
-	- uploads output to the same S3 bucket
-	- posts completion to `SQS_QUEUE_URL_B`
+- Python 3.12+
+- FFmpeg installed and available in `PATH`
+- AWS credentials with permissions for:
+	- S3 `GetObject` and `PutObject`
+	- SQS `ReceiveMessage`, `DeleteMessage`, `SendMessage`
 
 ## Environment Variables
 
-Create a `.env` file in the project root with:
+Create a `.env` file in this directory.
+
+Required for AWS resources:
+
+- `SQS_QUEUE_URL_A`: input queue URL
+- `SQS_QUEUE_URL_B`: output queue URL
+- `S3_BUCKET_NAME`: bucket name (used by your environment/config)
+
+AWS credentials options:
+
+- Option 1: set both
+	- `AWS_ACCESS_KEY_ID`
+	- `AWS_SECRET_ACCESS_KEY`
+- Option 2: set neither and use default AWS credential chain (instance role, profile, etc.)
+
+Optional:
+
+- `AWS_REGION`
+
+Example `.env`:
 
 ```env
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=...
-S3_BUCKET_NAME=...
-SQS_QUEUE_URL_A=...
-SQS_QUEUE_URL_B=...
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=ap-southeast-1
+S3_BUCKET_NAME=your-bucket
+SQS_QUEUE_URL_A=https://sqs.<region>.amazonaws.com/<account>/<queue-a>
+SQS_QUEUE_URL_B=https://sqs.<region>.amazonaws.com/<account>/<queue-b>
 ```
 
-Notes:
+## Message Format (Queue A)
 
-- `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` must be set together, or both omitted to use default AWS credential resolution.
-- `AWS_REGION` should be set to the region where your resources exist.
+Expected SQS message body JSON:
 
-## Local Development
+```json
+{
+	"job_id": "job-123",
+	"bucket": "your-bucket",
+	"key": "uploads/input.mp4",
+	"requested_profile": {
+		"resolution": "1280:720",
+		"video_codec": "libx264",
+		"audio_codec": "aac",
+		"ffmpeg_preset": "medium",
+		"crf": 23,
+		"video_bitrate": "2000k"
+	}
+}
+```
 
-1. Create and activate a virtual environment:
-	
+Required fields:
+
+- Top level: `job_id`, `bucket`, `key`
+- `requested_profile`: `resolution`, `video_codec`, `audio_codec`
+
+Defaults:
+
+- `ffmpeg_preset`: `medium`
+- `crf`: `23`
+- `video_bitrate`: optional
+
+## Run Locally
+
+1. Create and activate virtual environment:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -66,112 +106,47 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3. Run the API:
+3. Start worker:
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+python -m transcodeVideo
 ```
 
-4. Health check:
+## Run with Docker
+
+Build image:
 
 ```bash
-curl http://localhost:8000/
+sudo docker buildx build -t instance_a:latest .
 ```
 
-Expected response:
-
-```json
-{"Status":"OK"}
-```
-
-## Docker
-
-Build:
+Run container (loads `.env`):
 
 ```bash
-docker build -t transcoding-api .
+sudo docker run --rm --env-file .env instance_a:latest
 ```
 
-Run:
+## Output Message (Queue B)
 
-```bash
-docker run --rm -p 8000:8000 --env-file .env transcoding-api
-```
-
-## API
-
-### `GET /`
-
-Returns service status.
-
-### `POST /transcode`
-
-Accepts multipart form data:
-
-- `file`: video file (`.mp4`, `.avi`, `.mkv`)
-- `requested_profile`: JSON string containing:
-	- `resolution` (string)
-	- `video_codec` (string)
-	- `audio_codec` (string)
-	- `ffmpeg_preset` (string)
-	- `crf` (integer)
-	- `video_bitrate` (string)
-
-Example:
-
-```bash
-curl -X POST "http://localhost:8000/transcode" \
-	-F 'file=@sample.mp4' \
-	-F 'requested_profile={"resolution":"1920x1080","video_codec":"libx264","audio_codec":"aac","ffmpeg_preset":"medium","crf":23,"video_bitrate":"3000k"}'
-```
-
-On success, returns the transcoded file as a downloadable response.
-
-## SQS Message Contract
-
-### Input Queue (`SQS_QUEUE_URL_A`)
-
-The API publishes JSON like:
+On success, the worker sends:
 
 ```json
 {
-	"job_id": "uuid-string",
-	"bucket": "your-s3-bucket",
-	"key": "sanitized-input-filename.mp4",
-	"requested_profile": {
-		"resolution": "1920x1080",
-		"video_codec": "libx264",
-		"audio_codec": "aac",
-		"ffmpeg_preset": "medium",
-		"crf": 23,
-		"video_bitrate": "3000k"
-	}
+	"job_id": "job-123",
+	"bucket": "your-bucket",
+	"key": "transcoded/input.mp4",
+	"output_file": "transcoded/input.mp4"
 }
 ```
 
-### Output Queue (`SQS_QUEUE_URL_B`)
+## Troubleshooting
 
-Your worker should publish JSON containing the same `job_id` and either:
+- `Incomplete AWS credentials`:
+	Set both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, or set neither.
 
-- `output_file`, or
-- `key`
+- Docker build fails at pip install on Ubuntu 24 base image:
+	The Dockerfile uses an internal virtual environment (`/opt/venv`) to avoid externally-managed pip restrictions.
 
-Example:
+- FFmpeg errors during transcode:
+	Verify input object exists, codecs are valid, and `resolution` format is valid (for example `1280:720`).
 
-```json
-{
-	"job_id": "same-uuid-as-input",
-	"output_file": "output-video.mp4"
-}
-```
-
-## Error Behavior
-
-- `400`: invalid `requested_profile` JSON or unsupported file extension.
-- `500`: worker result message missing `output_file` and `key`.
-- `504`: no matching worker result received within 5 minutes.
-
-## Notes
-
-- Temporary output files are cleaned up automatically after response is sent.
-- Ensure IAM permissions allow required S3 and SQS operations.

@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:8000";
+const API_URL = "http://54.204.234.7";
 
 export type UploadResult = {
     downloadedFileName: string;
