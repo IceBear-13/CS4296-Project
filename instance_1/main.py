@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from botocore.exceptions import ClientError
 from boto3_utils.utils import (
     delete_message_from_queue,
     send_message_to_queue,
@@ -74,7 +75,17 @@ def process_video(job_id: str, file: UploadFile, requested_profile: RequestedPro
                 raise HTTPException(status_code=500, detail="Transcoding result missing output_file/key.")
 
             print(f"Peak memory usage: {message_body.get('memory_usage_mb')}, peak CPU usage: {message_body.get('peak_cpu_usage_percent')}, average CPU usage: {message_body.get('average_cpu_usage_percent')}")
-            download_file_from_s3(output_file, output_path)
+            output_bucket = message_body.get("bucket") or s3_bucket_name
+            try:
+                download_file_from_s3(output_file, output_path, output_bucket)
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "Unknown")
+                if code in {"404", "NoSuchKey", "NotFound"}:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Transcoded file not found in S3. bucket={output_bucket}, key={output_file}",
+                    )
+                raise
             delete_message_from_queue(sqs_queue_url_b, message["ReceiptHandle"])
             return output_path
 
@@ -107,5 +118,25 @@ def transcode_video(
         path=output_path,
         media_type=media_type,
         filename=os.path.basename(output_path),
+        background=BackgroundTask(lambda: os.path.exists(output_path) and os.remove(output_path)),
+    )
+
+@app.get("/transcoded/{file_name}")
+def get_transcoded_video(file_name: str):
+    sanitized_name = sanitize_movie_filename(file_name)
+    output_path = f"output_{sanitized_name}"
+    object_key = f"transcoded/{sanitized_name}"
+    try:
+        download_file_from_s3(object_key, output_path)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "Unknown")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=404, detail="Transcoded video not found.")
+        raise
+    media_type = mimetypes.guess_type(output_path)[0] or "application/octet-stream"
+    return FileResponse(
+        path=output_path,
+        media_type=media_type,
+        filename=sanitized_name,
         background=BackgroundTask(lambda: os.path.exists(output_path) and os.remove(output_path)),
     )

@@ -33,6 +33,7 @@ def upload_file_to_s3(file: UploadFile, object_name=None):
     response = s3_client.upload_fileobj(file.file, s3_bucket_name, object_name)
     return response
 
-def download_file_from_s3(object_name, file_path):
-    response = s3_client.download_file(s3_bucket_name, object_name, file_path)
+def download_file_from_s3(object_name, file_path, bucket_name=None):
+    target_bucket = bucket_name or s3_bucket_name
+    response = s3_client.download_file(target_bucket, object_name, file_path)
     return response
