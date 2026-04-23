@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import { type UploadResult, uploadVideo } from "./api";
+import { fetchTranscodedVideo, type UploadResult, uploadVideo } from "./api";
 
 // const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -67,6 +67,8 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [form, setForm] = useState<FormState>(initialForm);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFetching, setIsFetching] = useState(false);
+  const [fetchFileName, setFetchFileName] = useState("");
   const [response, setResponse] = useState<UploadResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -128,6 +130,30 @@ function App() {
     downloadLink.click();
     downloadLink.remove();
     URL.revokeObjectURL(blobUrl);
+  };
+
+  const handleFetchTranscodedVideo = async () => {
+    if (!fetchFileName.trim()) {
+      setErrorMessage("Please enter a transcoded filename to fetch.");
+      return;
+    }
+
+    setIsFetching(true);
+    setResponse(null);
+    setErrorMessage("");
+
+    try {
+      const fetchResponse = await fetchTranscodedVideo(fetchFileName.trim());
+      setResponse(fetchResponse);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unexpected error while fetching transcoded video.";
+      setErrorMessage(message);
+    } finally {
+      setIsFetching(false);
+    }
   };
 
   return (
@@ -298,6 +324,41 @@ function App() {
                 )}
               </Button>
             </form>
+
+            <div className="mt-6 border-t border-slate-200 pt-6">
+              <p className="mb-3 text-sm font-semibold text-slate-800">
+                Fetch existing transcoded video
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="grid flex-1 gap-2">
+                  <Label htmlFor="fetch-video-name">Transcoded file name</Label>
+                  <Input
+                    id="fetch-video-name"
+                    type="text"
+                    placeholder="e.g. my-video.mp4"
+                    value={fetchFileName}
+                    onChange={(event) => setFetchFileName(event.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={handleFetchTranscodedVideo}
+                  disabled={isFetching || isSubmitting}
+                >
+                  {isFetching ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Fetching...
+                    </>
+                  ) : (
+                    <>
+                      <Download className="size-4" />
+                      Fetch video
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
 
             {errorMessage && (
               <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
