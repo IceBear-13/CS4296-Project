@@ -82,3 +82,16 @@ export const uploadVideo = async (
 
     return { downloadedFileName: fileName, blob };
 }
+
+export const fetchTranscodedVideo = async (video_name: string): Promise<UploadResult> => {
+    const response = await fetch(`${API_URL}/transcoded/${encodeURIComponent(video_name)}`);
+    if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`Failed to fetch transcoded video (${response.status}): ${detail}`);
+    }
+
+    const contentDisposition = response.headers.get("content-disposition");
+    const fileName = getFilenameFromContentDisposition(contentDisposition) || `output_${video_name}`;
+    const blob = await response.blob();
+    return { downloadedFileName: fileName, blob };
+}
