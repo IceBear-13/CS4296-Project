@@ -19,7 +19,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./components/ui/select";
-import { fetchTranscodedVideo, type UploadResult, uploadVideo } from "./api";
+import {
+  fetchTranscodedVideo,
+  fetchTranscodedVideoEdge,
+  type UploadResult,
+  uploadVideo,
+  uploadVideoEdge,
+} from "./api";
 
 // const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -37,6 +43,8 @@ const PRESET_OPTIONS = [
   "slower",
   "veryslow",
 ];
+
+type UploadTarget = "cloud" | "edge";
 
 // type SubmitJobResponse = {
 //   job_id: string;
@@ -66,15 +74,22 @@ const initialForm: FormState = {
 function App() {
   const [file, setFile] = useState<File | null>(null);
   const [form, setForm] = useState<FormState>(initialForm);
+  const [uploadTarget, setUploadTarget] = useState<UploadTarget>("cloud");
+  const [edgeHostAddress, setEdgeHostAddress] = useState("http://127.0.0.1:8000");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchFileName, setFetchFileName] = useState("");
   const [response, setResponse] = useState<UploadResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
+  const normalizedEdgeHostAddress = edgeHostAddress.trim().replace(/\/$/, "");
+
   const isSubmitDisabled = useMemo(
-    () => isSubmitting || file === null,
-    [file, isSubmitting],
+    () =>
+      isSubmitting ||
+      file === null ||
+      (uploadTarget === "edge" && !normalizedEdgeHostAddress),
+    [file, isSubmitting, uploadTarget, normalizedEdgeHostAddress],
   );
 
   const handleFileChange = (nextFile: File | null) => {
@@ -95,15 +110,31 @@ function App() {
     setErrorMessage("");
 
     try {
-      const uploadResponse = await uploadVideo(
-        file,
-        form.resolution,
-        form.video_codec,
-        form.audio_codec,
-        form.ffmpeg_preset,
-        form.crf,
-        form.video_bitrate,
-      );
+      if (uploadTarget === "edge" && !normalizedEdgeHostAddress) {
+        throw new Error("Please enter an Edge host address.");
+      }
+
+      const uploadResponse =
+        uploadTarget === "edge"
+          ? await uploadVideoEdge(
+              file,
+              form.resolution,
+              form.video_codec,
+              form.audio_codec,
+              form.ffmpeg_preset,
+              form.crf,
+              form.video_bitrate,
+              normalizedEdgeHostAddress,
+            )
+          : await uploadVideo(
+              file,
+              form.resolution,
+              form.video_codec,
+              form.audio_codec,
+              form.ffmpeg_preset,
+              form.crf,
+              form.video_bitrate,
+            );
 
       setResponse(uploadResponse);
     } catch (error) {
@@ -143,7 +174,18 @@ function App() {
     setErrorMessage("");
 
     try {
-      const fetchResponse = await fetchTranscodedVideo(fetchFileName.trim());
+      if (uploadTarget === "edge" && !normalizedEdgeHostAddress) {
+        throw new Error("Please enter an Edge host address.");
+      }
+
+      const fetchResponse =
+        uploadTarget === "edge"
+          ? await fetchTranscodedVideoEdge(
+              fetchFileName.trim(),
+              normalizedEdgeHostAddress,
+            )
+          : await fetchTranscodedVideo(fetchFileName.trim());
+
       setResponse(fetchResponse);
     } catch (error) {
       const message =
@@ -175,6 +217,37 @@ function App() {
 
           <CardContent>
             <form className="grid gap-6" onSubmit={handleSubmit}>
+              <div className="grid gap-2">
+                <Label htmlFor="upload-target">Upload target</Label>
+                <Select
+                  value={uploadTarget}
+                  onValueChange={(value) =>
+                    setUploadTarget(value as UploadTarget)
+                  }
+                >
+                  <SelectTrigger id="upload-target">
+                    <SelectValue placeholder="Select upload target" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cloud">Cloud</SelectItem>
+                    <SelectItem value="edge">Edge</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {uploadTarget === "edge" && (
+                <div className="grid gap-2">
+                  <Label htmlFor="edge-host-address">Edge host address</Label>
+                  <Input
+                    id="edge-host-address"
+                    type="url"
+                    placeholder="e.g. http://127.0.0.1:8000"
+                    value={edgeHostAddress}
+                    onChange={(event) => setEdgeHostAddress(event.target.value)}
+                  />
+                </div>
+              )}
+
               <div className="grid gap-2">
                 <FileUploadDropzone1
                   value={file}
