@@ -1,9 +1,11 @@
 import threading
 import time 
 import boto3
-# import os
+import os
 import json
 import subprocess
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from botocore.exceptions import ClientError
 from settings import session, sqs_queue_url_a, sqs_queue_url_b
 from sanitize import sanitize_movie_filename
@@ -11,6 +13,25 @@ import psutil
 
 s3_client = session.client('s3')
 sqs_client = session.client('sqs')
+TMP_DIR = os.getenv("TRANSCODE_TMP_DIR", "/tmp")
+MIN_FREE_SPACE_BYTES = 500 * 1024 * 1024
+SQS_VISIBILITY_TIMEOUT = int(os.getenv("SQS_VISIBILITY_TIMEOUT", "3600"))
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+
+
+def has_enough_tmp_space(bucket_name: str, object_key: str) -> tuple[bool, str]:
+    object_size = s3_client.head_object(Bucket=bucket_name, Key=object_key)["ContentLength"]
+    free_bytes = shutil.disk_usage(TMP_DIR).free
+    required_bytes = max(object_size * 2, MIN_FREE_SPACE_BYTES)
+
+    if free_bytes < required_bytes:
+        return False, (
+            f"Not enough /tmp space for {object_key}: "
+            f"need at least {required_bytes / (1024 * 1024):.2f} MB, "
+            f"have {free_bytes / (1024 * 1024):.2f} MB"
+        )
+
+    return True, ""
 
 def download_video_from_s3(
     s3_client: boto3.client, 
@@ -64,7 +85,9 @@ def transcode_video(
         ffmpeg_process = None
         cpu_samples = []
         peak_memory_bytes = 0
+        last_progress_log = time.monotonic()
 
+        print(f"Starting transcode for {input_path}")
         process = subprocess.Popen(cmd)
         try:
             ffmpeg_process = psutil.Process(process.pid)
@@ -82,6 +105,12 @@ def transcode_video(
                 memory_bytes = ffmpeg_process.memory_info().rss
                 cpu_samples.append(cpu_usage)
                 peak_memory_bytes = max(peak_memory_bytes, memory_bytes)
+                if time.monotonic() - last_progress_log >= 30:
+                    print(
+                        f"Transcoding {input_path}: cpu={cpu_usage:.2f}% "
+                        f"rss={memory_bytes / (1024 * 1024):.2f} MB"
+                    )
+                    last_progress_log = time.monotonic()
             except (psutil.Error, ProcessLookupError):
                 ffmpeg_process = None
 
@@ -93,9 +122,10 @@ def transcode_video(
             metrics["peak_cpu_usage_percent"] = round(max(cpu_samples), 2)
             metrics["average_cpu_usage_percent"] = round(sum(cpu_samples) / len(cpu_samples), 2)
         metrics["memory_usage_mb"] = round(peak_memory_bytes / (1024 * 1024), 2)
+        print(f"Finished transcode for {input_path}")
         return True, metrics
-    except Exception:
-        print(f"Error occurred while transcoding video: {input_path}")
+    except Exception as exc:
+        print(f"Error occurred while transcoding video: {input_path}: {exc}")
         return False, metrics
 
 def parse_video_message(message: dict) -> dict:
@@ -158,77 +188,99 @@ def process_video_message(message: dict):
         video_bitrate = video_info.get("video_bitrate")
 
         sanitized_filename = sanitize_movie_filename(key.split('/')[-1])
-        input_path = f"/tmp/{sanitized_filename}"
-        output_path = f"/tmp/transcoded-{sanitized_filename}"
-        download_video_from_s3(s3_client, bucket, key, input_path)
+        input_path = f"{TMP_DIR}/{sanitized_filename}"
+        output_path = f"{TMP_DIR}/transcoded-{sanitized_filename}"
 
-        transcode_ok, transcode_metrics = transcode_video(
-            input_path,
-            output_path,
-            video_codec,
-            audio_codec,
-            ffmpeg_preset,
-            resolution,
-            crf,
-            video_bitrate,
-        )
-        if not transcode_ok:
+        has_space, space_message = has_enough_tmp_space(bucket, key)
+        if not has_space:
+            print(space_message)
             return False
 
-        output_key = f"transcoded/{sanitized_filename}"
-        upload_video_to_s3(s3_client, bucket, output_key, output_path)
-        sqs_client.send_message(
-            QueueUrl=sqs_queue_url_b,
-            MessageBody=json.dumps({
-                "job_id": job_id,
-                "bucket": bucket,
-                "key": output_key,
-                "output_file": output_key,
-                "peak_cpu_usage_percent": transcode_metrics["peak_cpu_usage_percent"],
-                "average_cpu_usage_percent": transcode_metrics["average_cpu_usage_percent"],
-                "memory_usage_mb": transcode_metrics["memory_usage_mb"],
-            })
-        )
+        print(f"Downloading {key} to {input_path}")
+        download_video_from_s3(s3_client, bucket, key, input_path)
 
-        # Acknowledge only after successful processing to avoid message loss.
-        sqs_client.delete_message(
-            QueueUrl=sqs_queue_url_a,
-            ReceiptHandle=message['ReceiptHandle']
-        )
-        return True
+        try:
+            transcode_ok, transcode_metrics = transcode_video(
+                input_path,
+                output_path,
+                video_codec,
+                audio_codec,
+                ffmpeg_preset,
+                resolution,
+                crf,
+                video_bitrate,
+            )
+            if not transcode_ok:
+                sqs_client.send_message(
+                    QueueUrl=sqs_queue_url_b,
+                    MessageBody=json.dumps({
+                        "job_id": job_id,
+                        "bucket": bucket,
+                        "key": key,
+                        "status": "error",
+                    })
+                )
+                
+                return False
+
+            output_key = f"transcoded/{sanitized_filename}"
+            print(f"Uploading {output_path} to s3://{bucket}/{output_key}")
+            upload_video_to_s3(s3_client, bucket, output_key, output_path)
+            sqs_client.send_message(
+                QueueUrl=sqs_queue_url_b,
+                MessageBody=json.dumps({
+                    "job_id": job_id,
+                    "bucket": bucket,
+                    "key": output_key,
+                    "status": "completed",
+                    "output_file": output_key,
+                    "peak_cpu_usage_percent": transcode_metrics["peak_cpu_usage_percent"],
+                    "average_cpu_usage_percent": transcode_metrics["average_cpu_usage_percent"],
+                    "memory_usage_mb": transcode_metrics["memory_usage_mb"],
+                })
+            )
+
+            # Acknowledge only after successful processing to avoid message loss.
+            sqs_client.delete_message(
+                QueueUrl=sqs_queue_url_a,
+                ReceiptHandle=message['ReceiptHandle']
+            )
+            return True
+        finally:
+            for path in (input_path, output_path):
+                if os.path.exists(path):
+                    os.remove(path)
     except Exception as e:
         print(f"Error processing message: {e}")
         return False
 
 
 def main():
-    threads = []
     print("Waiting for messages in SQS Queue A...")
 
-    while True:
-        try:
-            response = sqs_client.receive_message(
-                QueueUrl=sqs_queue_url_a,
-                MaxNumberOfMessages=1,
-                WaitTimeSeconds=10
-            )
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS) as executor:
+        while True:
+            try:
+                response = sqs_client.receive_message(
+                    QueueUrl=sqs_queue_url_a,
+                    MaxNumberOfMessages=MAX_CONCURRENT_JOBS,
+                    WaitTimeSeconds=10,
+                    VisibilityTimeout=SQS_VISIBILITY_TIMEOUT,
+                )
 
-            messages = response.get('Messages', [])
-            if not messages:
-                continue
-            
-            else:
-                print (f"Received {len(messages)} message(s) from SQS Queue A")
+                messages = response.get('Messages', [])
+                if not messages:
+                    continue
+                
+                print(f"Received {len(messages)} message(s) from SQS Queue A")
                 for message in messages:
-                    thread = threading.Thread(target=process_video_message, args=(message,))
-                    thread.start()
-                    threads.append(thread)
-        except ClientError as e:
-            print(f"Error receiving messages from SQS: {e}")
-            time.sleep(5)
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            time.sleep(5)
+                    executor.submit(process_video_message, message)
+            except ClientError as e:
+                print(f"Error receiving messages from SQS: {e}")
+                time.sleep(5)
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                time.sleep(5)
 
         
 
