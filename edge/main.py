@@ -5,8 +5,17 @@ from pydantic import ValidationError
 import subprocess
 import psutil
 import time
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 class RequestedProfile(BaseModel):
     resolution: str = "854:480"
@@ -115,3 +124,9 @@ def transcode(
         return FileResponse(output_path, media_type="video/mp4", filename=f"transcoded_{file.filename}")
     else:
         return {"message": "Failed to transcode video"}, 500
+
+
+@app.get("/trasncode/{filename}")
+def get_transcoded_video(filename: str):
+    output_path = f"/tmp/transcoded_{filename}"
+    return FileResponse(output_path, media_type="video/mp4", filename=f"transcoded_{filename}")
