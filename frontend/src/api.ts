@@ -95,3 +95,64 @@ export const fetchTranscodedVideo = async (video_name: string): Promise<UploadRe
     const blob = await response.blob();
     return { downloadedFileName: fileName, blob };
 }
+
+export const uploadVideoEdge = async (
+    file: File,
+    resolution: string,
+    video_codec: string,
+    audio_codec: string,
+    FFmpeg_preset: string,
+    crf: number,
+    video_bitrate: string,
+    host_address: string
+) : Promise<UploadResult> => {
+    const start = Date.now();
+    const { width, height } = resolve_resolution(resolution);
+    const requestedProfile = {
+        resolution: `${width}:${height}`,
+        video_codec,
+        audio_codec,
+        ffmpeg_preset: FFmpeg_preset,
+        crf,
+        video_bitrate,
+    };
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("requested_profile", JSON.stringify(requestedProfile));
+
+    const response = await fetch(`${host_address}/transcode`, {
+        method: "POST",
+        body: formData,
+    });
+    
+    if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`Failed to upload video (${response.status}): ${detail}`);
+    }
+
+    const contentDisposition = response.headers.get("content-disposition");
+    const fileName = getFilenameFromContentDisposition(contentDisposition) || `output_${file.name}`;
+    const blob = await response.blob();
+
+    const end = Date.now();
+    console.log(`Transcoding completed in ${(end - start) / 1000} seconds`);
+
+    return { downloadedFileName: fileName, blob };
+}
+
+export const fetchTranscodedVideoEdge = async (
+    video_name: string, 
+    host_address: string
+): Promise<UploadResult> => {
+    const response = await fetch(`${host_address}/transcoded/${encodeURIComponent(video_name)}`);
+    if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`Failed to fetch transcoded video (${response.status}): ${detail}`);
+    }
+
+    const contentDisposition = response.headers.get("content-disposition");
+    const fileName = getFilenameFromContentDisposition(contentDisposition) || `output_${video_name}`;
+    const blob = await response.blob();
+    return { downloadedFileName: fileName, blob };
+}
